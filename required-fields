@@ -1,0 +1,1645 @@
+<?php
+/**
+ * Class that manages the display and processing of the campaign form.
+ *
+ * @package   Charitable Ambassadors/Classes/Charitable_Ambassadors_Campaign_Form
+ * @author    Eric Daams
+ * @copyright Copyright (c) 2020, Studio 164a
+ * @license   http://opensource.org/licenses/gpl-2.0.php GNU Public License
+ * @since     1.0.0
+ * @version   2.0.8
+ */
+
+// Exit if accessed directly.
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
+if ( ! class_exists( 'Charitable_Ambassadors_Campaign_Form' ) ) :
+
+	/**
+	 * Charitable_Ambassadors_Campaign_Form
+	 *
+	 * @since 1.0.0
+	 */
+	class Charitable_Ambassadors_Campaign_Form extends Charitable_Form {
+
+		/**
+		 * Shortcode parameters.
+		 *
+		 * @since 1.0.0
+		 *
+		 * @var   array
+		 */
+		protected $args;
+
+		/**
+		 * Page number.
+		 *
+		 * @since 1.0.0
+		 *
+		 * @var   int
+		 */
+		protected $page;
+
+		/**
+		 * The nonce action identifier.
+		 *
+		 * @since 1.0.0
+		 *
+		 * @var   string
+		 */
+		protected $nonce_action = 'charitable_campaign_submission';
+
+		/**
+		 * The nonce name.
+		 *
+		 * @since 1.0.0
+		 *
+		 * @var   string
+		 */
+		protected $nonce_name = '_charitable_campaign_submission_nonce';
+
+		/**
+		 * Action to be executed upon form submission.
+		 *
+		 * @since 1.0.0
+		 *
+		 * @var   string
+		 */
+		protected $form_action = 'save_campaign';
+
+		/**
+		 * The current user.
+		 *
+		 * @since 1.0.0
+		 *
+		 * @var   Charitable_User
+		 */
+		protected $user;
+
+		/**
+		 * Campaign object.
+		 *
+		 * @since 1.0.0
+		 *
+		 * @var   Charitable_Campaign|false
+		 */
+		private $campaign;
+
+		/**
+		 * The context of the submission.
+		 *
+		 * @since 1.1.0
+		 *
+		 * @var   string
+		 */
+		protected $submission_context;
+
+		/**
+		 * Form fields settings.
+		 *
+		 * @since 2.0.0
+		 *
+		 * @var   array
+		 */
+		protected $form_fields_settings;
+
+		/**
+		 * Create class object.
+		 *
+		 * @since 1.0.0
+		 *
+		 * @param array $args User-defined shortcode attributes.
+		 */
+		public function __construct( $args = [] ) {
+			$this->id   = uniqid();
+			$this->args = $args;
+
+			$this->attach_hooks_and_filters();
+		}
+
+		/**
+		 * Set up callback methods for actions & filters.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return void
+		 */
+		protected function attach_hooks_and_filters() {
+			add_filter( 'charitable_campaign_submission_fields', [ $this, 'filter_non_editable_fields' ], 5 );
+			add_filter( 'charitable_campaign_submission_fields', [ $this, 'filter_update_only_fields' ], 5 );
+
+			do_action( 'charitable_ambassadors_campaign_form_start', $this );
+		}
+
+		/**
+		 * Return the current user's Charitable_User object.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return Charitable_User
+		 */
+		public function get_user() {
+			if ( ! isset( $this->user ) ) {
+				$this->user = new Charitable_User( get_current_user_id() );
+			}
+
+			return $this->user;
+		}
+
+		/**
+		 * Return the current campaign's Charitable_Campaign object.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return Charitable_Campaign|false
+		 */
+		public function get_campaign() {
+			if ( ! isset( $this->campaign ) ) {
+
+				if ( isset( $_POST['ID'] ) ) {
+					$campaign_id = $_POST['ID'];
+				} else {
+					$campaign_id = get_query_var( 'campaign_id', false );
+				}
+
+				$this->campaign = $campaign_id ? new Charitable_Campaign( $campaign_id ) : false;
+			}
+
+			return $this->campaign;
+		}
+
+		/**
+		 * Returns the value of a particular key.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @param  string $key The key of the field value we need.
+		 * @return mixed
+		 */
+		public function get_campaign_value( $key ) {
+			if ( isset( $_POST[ $key ] ) ) {
+				return $_POST[ $key ];
+			}
+
+			$campaign = $this->get_campaign();
+			$value    = '';
+
+			if ( $campaign ) {
+				switch ( $key ) {
+					case 'description':
+					case 'goal':
+					case 'suggested_donations':
+					case 'recipient':
+					case 'image':
+						$value = $campaign->get( $key );
+						break;
+
+					case 'ID':
+					case 'post_title':
+					case 'post_content':
+						$value = $campaign->$key;
+						break;
+
+					case 'categories':
+						$value = wp_get_object_terms( $campaign->ID, 'campaign_category', array( 'fields' => 'ids' ) );
+						break;
+
+					case 'tags':
+						$value = wp_get_object_terms( $campaign->ID, 'campaign_tag', array( 'fields' => 'ids' ) );
+						break;
+
+					case 'recurring_donations':
+						$current = $campaign->get( 'recurring_donations' );
+						$value   = in_array( $current, array( 'simple', 'advanced' ) );
+						break;
+
+					default:
+						$data = json_decode( $campaign->get( 'submission_data' ) );
+
+						if ( ! is_array( $data ) ) {
+							$value = $campaign->get( $key );
+						} else {
+							// Fallback.
+							$value = array_key_exists( $key, $data ) ? $data[ $key ] : $campaign->get( $key );
+						}
+				}//end switch
+			}//end if
+
+			/**
+			 * Filter the campaign value for a particular field.
+			 *
+			 * @since 1.0.0
+			 *
+			 * @param mixed               $value    The value.
+			 * @param string              $key      The field.
+			 * @param Charitable_Campaign $campaign The campaign object.
+			 */
+			return apply_filters( 'charitable_campaign_value', $value, $key, $campaign );
+		}
+
+		/**
+		 * Returns the value of a particular key.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @param  string $key     The key to search for.
+		 * @param  mixed  $default The default value to return if none is found.
+		 * @return mixed
+		 */
+		public function get_user_value( $key, $default = '' ) {
+			if ( isset( $_POST[ $key ] ) ) {
+				return $_POST[ $key ];
+			}
+
+			$user  = $this->get_user();
+			$value = $default;
+
+			if ( $user ) {
+				switch ( $key ) {
+					case 'user_description':
+						$value = $user->description;
+						break;
+
+					default:
+						if ( $user->has_prop( $key ) ) {
+							$value = $user->__get( $key );
+						}
+				}
+			}
+
+			return apply_filters( 'charitable_campaign_submission_user_value', $value, $key, $user );
+		}
+
+		/**
+		 * Returns the recipient type associated with this campaign.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return string
+		 */
+		public function get_recipient_type() {
+			$recipient_type = apply_filters( 'charitable_ambassadors_campaign_form_recipient_type', $this->get_campaign_value( 'recipient' ), $this );
+
+			if ( empty( $recipient_type ) ) {
+				$recipient_types = charitable_get_option( 'campaign_recipients', [] );
+
+				/* Remove the fundraiser recipient type if there are no campaigns to fundraise for yet. */
+				$fundraiser_idx = array_search( Charitable_Ambassadors_Fundraiser::TYPE, $recipient_types );
+
+				if ( false !== $fundraiser_idx && ! charitable_ambassadors_has_available_parent_campaigns() ) {
+					unset( $recipient_types[ $fundraiser_idx ] );
+				}
+
+				/* If neither recipient type is checked, we use 'ambassador' as a default (i.e. funds raised for organization). */
+				if ( empty( $recipient_types ) ) {
+					return 'ambassador';
+				}
+
+				if ( count( $recipient_types ) > 1 ) {
+					return $recipient_type;
+				}
+
+				$recipient_type = $recipient_types[0];
+			}
+
+			return $recipient_type;
+		}
+
+		/**
+		 * Adds hidden fields to the start of the campaign form.
+		 *
+		 * @since  2.0.0
+		 *
+		 * @return array
+		 */
+		public function get_hidden_fields() {
+			/**
+			 * Filter the hidden fields.
+			 *
+			 * @since 1.0.0
+			 *
+			 * @param array                                $fields The array of hidden fields.
+			 * @param Charitable_Ambassadors_Campaign_Form $form   This instance of `Charitable_Ambassadors_Campaign_Form`.
+			 */
+			return apply_filters(
+				'charitable_ambassadors_campaign_form_hidden_fields',
+				array_merge(
+					parent::get_hidden_fields(),
+					[
+						'page' => $this->get_current_page(),
+						'ID'   => $this->get_campaign_value( 'ID' ),
+					]
+				),
+				$this
+			);
+		}
+
+		/**
+		 * Return the campaign fields.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return array[]
+		 */
+		public function get_campaign_fields() {
+			$fields = $this->get_sanitized_campaign_form_fields( 'campaign-details' );
+
+			if ( 'length' == $this->get_form_fields_setting( 'end_date' ) ) {
+				$fields['length'] = $this->setup_campaign_length_field( $fields );
+			}
+
+			/**
+			 * Filter the campaign fields.
+			 *
+			 * @since 1.0.0
+			 *
+			 * @param array                                $fields Set of campaign fields.
+			 * @param Charitable_Ambassadors_Campaign_Form $form   Instance of `Charitable_Ambassadors_Campaign_Form`.
+			 */
+			$fields = apply_filters( 'charitable_campaign_submission_campaign_fields', $fields, $this );
+
+			uasort( $fields, 'charitable_priority_sort' );
+
+			return $fields;
+		}
+
+		/**
+		 * Return the donation options fields.
+		 *
+		 * @return array[]
+		 * @since  1.0.0
+		 */
+		public function get_donation_options_fields() {
+			$donation_fields = $this->get_sanitized_campaign_form_fields( 'donation-options' );
+
+			if ( ! empty( $donation_fields ) ) {
+				$donation_fields['donation_options'] = [
+					'type'      => 'paragraph',
+					'priority'  => 22,
+					'fullwidth' => true,
+					'content'   => __( 'When people make a donation to your campaign, they will be able to donate any amount they choose. You can also provide suggested donation amounts in the table below.', 'charitable-ambassadors' ),
+				];
+
+				if ( class_exists( 'Charitable_Recurring' ) && 'enabled' == $this->get_form_fields_setting( 'recurring_donations' ) ) {
+					$donation_fields['recurring_donations'] = [
+						'type'      => 'checkbox',
+						'label'     => __( 'Allow your donors to give with monthly recurring donations.', 'charitable-ambassadors' ),
+						'priority'  => 28,
+						'value'     => '1',
+						'data_type' => 'meta',
+						'checked'   => $this->get_campaign() && 'disabled' !== $this->get_campaign()->get( 'recurring_donation_mode' ),
+					];
+				}
+			}
+
+			/**
+			 * Filter the donation options fields in the campaign form.
+			 *
+			 * @since 1.0.0
+			 *
+			 * @param array                                $fields Set of fields.
+			 * @param Charitable_Ambassadors_Campaign_Form $form   Instance of `Charitable_Ambassadors_Campaign_Form`.
+			 */
+			$donation_fields = apply_filters( 'charitable_campaign_submission_donation_options_fields', $donation_fields, $this );
+
+			uasort( $donation_fields, 'charitable_priority_sort' );
+
+			return $donation_fields;
+		}
+
+		/**
+		 * Return the core user fields.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return array[]
+		 */
+		public function get_user_fields() {
+			// $user_fields = $this->get_sanitized_campaign_form_fields( 'user-details' );
+			$user_fields = [
+				'first_name'       => [
+					'label'     => __( 'First name', 'charitable-ambassadors' ),
+					'type'      => 'text',
+					'priority'  => 42,
+					'required'  => true,
+					'value'     => $this->get_user_value( 'first_name' ),
+					'data_type' => 'user',
+				],
+				'last_name'        => [
+					'label'     => __( 'Last name', 'charitable-ambassadors' ),
+					'type'      => 'text',
+					'priority'  => 44,
+					'required'  => true,
+					'value'     => $this->get_user_value( 'last_name' ),
+					'data_type' => 'user',
+				],
+				'user_email'       => [
+					'label'     => __( 'Email', 'charitable-ambassadors' ),
+					'type'      => 'email',
+					'required'  => true,
+					'priority'  => 46,
+					'value'     => $this->get_user_value( 'user_email' ),
+					'data_type' => 'user',
+				],
+				'city'             => [
+					'label'     => __( 'City', 'charitable-ambassadors' ),
+					'type'      => 'text',
+					'priority'  => 48,
+					'required'  => false,
+					'value'     => $this->get_user_value( 'donor_city' ),
+					'data_type' => 'user',
+				],
+				'state'            => [
+					'label'     => __( 'State', 'charitable-ambassadors' ),
+					'type'      => 'text',
+					'priority'  => 50,
+					'required'  => false,
+					'value'     => $this->get_user_value( 'donor_state' ),
+					'data_type' => 'user',
+				],
+				'country'          => [
+					'label'     => __( 'Country', 'charitable-ambassadors' ),
+					'type'      => 'select',
+					'options'   => charitable_get_location_helper()->get_countries(),
+					'priority'  => 52,
+					'required'  => false,
+					'value'     => $this->get_user_value( 'donor_country', charitable_get_option( 'country' ) ),
+					'data_type' => 'user',
+				],
+				'user_description' => [
+					'label'     => __( 'Bio', 'charitable-ambassadors' ),
+					'type'      => 'textarea',
+					'priority'  => 54,
+					'required'  => false,
+					'value'     => $this->get_user_value( 'user_description' ),
+					'data_type' => 'user',
+				],
+				'organisation'     => [
+					'label'     => __( 'Organization', 'charitable-ambassadors' ),
+					'type'      => 'text',
+					'priority'  => 56,
+					'required'  => false,
+					'value'     => $this->get_user_value( 'organisation' ),
+					'data_type' => 'user',
+				],
+			];
+
+			if ( is_user_logged_in() ) {
+				$user_fields['user_email']['attrs']['readonly'] = true;
+				$user_fields['user_email']['attrs']['tabindex'] = -1;
+			}
+
+			/**
+			 * Filter the user fields in the campaign form.
+			 *
+			 * @since 1.0.0
+			 *
+			 * @param array                                $user_fields The user fields.
+			 * @param Charitable_Ambassadors_Campaign_Form $form        The campaign form object.
+			 */
+			$user_fields = apply_filters( 'charitable_campaign_submission_user_fields', $user_fields, $this );
+
+			uasort( $user_fields, 'charitable_priority_sort' );
+
+			return $user_fields;
+		}
+
+		/**
+		 * Campaign form fields to be displayed.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return array[]
+		 */
+		public function get_fields() {
+			/**
+			 * Filter the fundraiser submission fields.
+			 *
+			 * @since 1.0.0
+			 *
+			 * @param array                                $fields The fields to include.
+			 * @param Charitable_Ambassadors_Campaign_Form $form   The form object.
+			 */
+			$fields = apply_filters(
+				'charitable_campaign_submission_fields',
+				[
+					'campaign_fields' => [
+						'legend'   => __( 'Campaign Details', 'charitable-ambassadors' ),
+						'type'     => 'fieldset',
+						'fields'   => $this->get_campaign_fields(),
+						'priority' => 20,
+						'page'     => 'campaign_details',
+					],
+					'donation_fields' => [
+						'legend'   => __( 'Donation Options', 'charitable-ambassadors' ),
+						'type'     => 'fieldset',
+						'fields'   => $this->get_donation_options_fields(),
+						'priority' => 40,
+						'page'     => 'campaign_details',
+					],
+					'user_fields'     => [
+						'legend'   => __( 'Your Details', 'charitable-ambassadors' ),
+						'type'     => 'fieldset',
+						'fields'   => $this->get_user_fields(),
+						'priority' => 60,
+						'page'     => 'campaign_details',
+					],
+				],
+				$this
+			);
+
+			$fields = $this->maybe_add_terms_conditions_fields( $fields );
+
+			uasort( $fields, 'charitable_priority_sort' );
+
+			return $fields;
+		}
+
+		/**
+		 * Return the fields to show in a particular section of the form.
+		 *
+		 * @since  2.0.0
+		 *
+		 * @param  string $section The name of the section to get.
+		 * @return array
+		 */
+		public function get_sanitized_campaign_form_fields( $section ) {
+			$form_fields = [];
+			$fields      = charitable()->campaign_fields()->get_campaign_form_fields( $section );
+
+			if ( empty( $fields ) ) {
+				return $form_fields;
+			}
+
+			foreach ( $fields as $key => $field ) {
+				$form_field = $this->set_field_value( $field->campaign_form, $key );
+
+				if ( method_exists( $this, 'sanitize_' . $key . '_field' ) ) {
+					$form_field = call_user_func( [ $this, 'sanitize_' . $key . '_field' ], $form_field );
+
+					if ( ! $form_field ) {
+						continue;
+					}
+				}
+
+				$form_fields[ $key ] = $form_field;
+			}
+
+			return $form_fields;
+		}
+
+		/**
+		 * Maybe add terms and conditions fields to the form.
+		 *
+		 * @since  2.0.0
+		 *
+		 * @param  array $fields The registered form fields.
+		 * @return array
+		 */
+		public function maybe_add_terms_conditions_fields( $fields ) {
+			$terms_fields = [];
+
+			if ( charitable_is_privacy_policy_activated() ) {
+				$terms_fields['privacy_policy_text'] = [
+					'type'     => 'content',
+					'content'  => '<p class="charitable-privacy-policy-text">' . charitable_get_privacy_policy_field_text() . '</p>',
+					'priority' => 4,
+				];
+			}
+
+			if ( charitable_is_contact_consent_activated() ) {
+				$terms_fields['contact_consent'] = [
+					'type'      => 'checkbox',
+					'label'     => charitable_get_option( 'contact_consent_label', __( 'Yes, I am happy for you to contact me via email or phone.', 'charitable-ambassadors' ) ),
+					'priority'  => 8,
+					'required'  => false,
+					'data_type' => 'meta',
+				];
+
+				if ( class_exists( 'Charitable_Newsletter_Connect' ) ) {
+					$mode = charitable_get_option( 'campaign_creators_email_marketing', 'opt-in-unchecked' );
+
+					switch ( $mode ) {
+						case 'disabled':
+							unset( $terms_fields['contact_consent'] );
+							break;
+
+						case 'opt-in-checked':
+							$terms_fields['contact_consent']['checked'] = true;
+							break;
+
+						case 'automatic':
+							$terms_fields['contact_consent']['type']  = 'hidden';
+							$terms_fields['contact_consent']['value'] = 1;
+							break;
+					}
+				}
+			}
+
+			if ( charitable_is_terms_and_conditions_activated() ) {
+				$terms_fields['terms_text'] = [
+					'type'     => 'content',
+					'content'  => '<div class="charitable-terms-text">' . charitable_get_terms_and_conditions() . '</div>',
+					'priority' => 12,
+				];
+
+				$terms_fields['accept_terms'] = [
+					'type'      => 'checkbox',
+					'label'     => charitable_get_terms_and_conditions_field_label(),
+					'priority'  => 16,
+					'required'  => true,
+					'data_type' => 'meta',
+				];
+			}
+
+			/**
+			 * Filter the terms and conditions fields.
+			 *
+			 * @since 2.0.0
+			 *
+			 * @param array                                $terms_fields List of terms fields.
+			 * @param Charitable_Ambassadors_Campaign_Form $form         Instance of `Charitable_Ambassadors_Campaign_Form`.
+			 */
+			$terms_fields = apply_filters( 'charitable_ambassadors_campaign_form_terms_fields', $terms_fields, $this );
+
+			if ( empty( $terms_fields ) ) {
+				return $fields;
+			}
+
+			return array_merge(
+				$fields,
+				[
+					'terms_fields' => [
+						'legend'   => __( 'Terms and Conditions', 'charitable-ambassadors' ),
+						'type'     => 'fieldset',
+						'fields'   => $terms_fields,
+						'priority' => 80,
+						'page'     => 'campaign_details',
+					],
+				]
+			);
+		}
+
+		/**
+		 * Campaign form fields to be displayed.
+		 *
+		 * @return array[]
+		 * @since  1.0.0
+		 */
+		public function get_pages() {
+			if ( ! isset( $this->pages ) ) {
+				/**
+				 * Filter the list of pages in the campaign submission form.
+				 *
+				 * @since 1.0.0
+				 *
+				 * @param array $pages An array of arrays. Each array includes a `page` and `priority`.
+				 */
+				$this->pages = apply_filters(
+					'charitable_campaign_submission_pages',
+					[
+						[
+							'page'     => 'campaign_details',
+							'priority' => 2,
+						],
+					]
+				);
+
+				uasort( $this->pages, 'charitable_priority_sort' );
+
+				$this->pages = array_values( $this->pages );
+			}
+
+			return $this->pages;
+		}
+
+		/**
+		 * Returns the fields for the current page.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return array
+		 */
+		public function get_current_page_fields() {
+			return $this->get_page_fields( $this->get_current_page() );
+		}
+
+		/**
+		 * Return the current page name.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return string
+		 */
+		public function get_current_page() {
+			if ( ! isset( $this->current_page ) ) {
+				$pages              = $this->get_pages();
+				$this->current_page = $pages[ $this->get_current_page_number() ]['page'];
+			}
+
+			return $this->current_page;
+		}
+
+		/**
+		 * Return the current page name.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return string|false
+		 */
+		public function get_previous_page() {
+			return isset( $_POST['page'] ) ? $_POST['page'] : false;
+		}
+
+		/**
+		 * Return the current page name.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return string|false
+		 */
+		public function get_previous_page_number() {
+			$previous = $this->get_previous_page();
+
+			if ( ! $previous ) {
+				return false;
+			}
+
+			foreach ( $this->get_pages() as $number => $page ) {
+				if ( $previous == $page['page'] ) {
+					return $number;
+				}
+			}
+
+			return false;
+		}
+
+		/**
+		 * Determine the current page number based on the args and submitted values.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return int
+		 */
+		public function get_current_page_number() {
+			/**
+			 * Filter the current page.
+			 *
+			 * @since 1.0.0
+			 *
+			 * @param int                                  $page The page number.
+			 * @param Charitable_Ambassadors_Campaign_Form $form This form instance.
+			 */
+			return apply_filters( 'charitable_ambassadors_campaign_form_current_page', 0, $this );
+		}
+
+		/**
+		 * Checks whether there are multiple pages to the form.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return boolean
+		 */
+		public function has_pages() {
+			return count( $this->get_pages() ) > 1;
+		}
+
+		/**
+		 * Returns whether the current page is the final page.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return boolean
+		 */
+		public function is_final_page() {
+			return $this->get_current_page_number() + 1 == count( $this->get_pages() );
+		}
+
+		/**
+		 * Return the HTML for the continue button on pages.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return string
+		 */
+		public function get_page_submit_button() {
+			/**
+			 * Filter the text of the Save & Continue button.
+			 *
+			 * @since 1.0.0
+			 *
+			 * @param string                               $text The button text.
+			 * @param Charitable_Ambassadors_Campaign_Form $form This form instance.
+			 */
+			$button_text = apply_filters( 'charitable_ambassadors_form_page_submission_button_text', __( 'Save & Continue', 'charitable-ambassadors' ), $this );
+
+			$output = sprintf( '<input class="button button-primary" type="submit" name="next-page" value="%s" />', esc_attr( $button_text ) );
+
+			return $output;
+		}
+
+		/**
+		 * Return the submit buttons.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return string
+		 */
+		public function get_submit_buttons() {
+			if ( ! $this->is_final_page() ) {
+				return $this->get_page_submit_button();
+			}
+
+			if ( false === $this->get_campaign() || 'draft' == $this->get_campaign()->post_status ) {
+				$primary_text = apply_filters( 'charitable_ambassadors_form_submission_buttons_primary_new_text', __( 'Submit Campaign', 'charitable-ambassadors' ), $this );
+			} else {
+				$primary_text = apply_filters( 'charitable_ambassadors_form_submission_buttons_primary_update_text', __( 'Update Campaign', 'charitable-ambassadors' ), $this );
+			}
+
+			$secondary_text = apply_filters( 'charitable_ambassadors_form_submission_buttons_preview_text', __( 'Save &amp; Preview', 'charitable-ambassadors' ) );
+
+			$output = sprintf(
+				'<input class="button button-secondary" type="submit" name="preview-campaign" value="%s" /> <input class="button button-primary" type="submit" name="submit-campaign" value="%s" />',
+				esc_attr( $secondary_text ),
+				esc_attr( $primary_text )
+			);
+
+			return $output;
+		}
+
+		/**
+		 * Hide sections with no fields, or with only hidden fields.
+		 *
+		 * @since  2.0.0
+		 *
+		 * @return array
+		 */
+		public function hide_hidden_sections( $fields ) {
+			foreach ( $fields as $section => $details ) {
+				if ( empty( $details['fields'] ) ) {
+					unset( $fields[ $section ] );
+					continue;
+				}
+
+				$all_hidden = true;
+
+				foreach ( $details['fields'] as $field ) {
+					if ( $all_hidden && 'hidden' != $field['type'] ) {
+						$all_hidden = false;
+					}
+				}
+
+				if ( $all_hidden ) {
+					foreach ( $details['fields'] as $key => $field ) {
+						$fields[ $key ] = $field;
+					}
+
+					unset( $fields[ $section ] );
+				}
+			}
+
+			return $fields;
+		}
+
+		/**
+		 * Remove non-editable fields when we are editing a published campaign.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @param  array[] $fields The fields in the form.
+		 * @return array[]
+		 */
+		public function filter_non_editable_fields( $fields ) {
+			if ( false == $this->get_campaign() || in_array( $this->get_campaign()->post_status, array( 'pending', 'draft' ) ) ) {
+				return $fields;
+			}
+
+			return $this->get_fields_filtered_by_callback( $fields, array( $this, 'is_non_editable_field' ) );
+		}
+
+		/**
+		 * Remove "update only" fields when we are creating a new campaign.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @param  array[] $fields The fields in the form.
+		 * @return array[]
+		 */
+		public function filter_update_only_fields( $fields ) {
+			if ( false == $this->get_campaign() || in_array( $this->get_campaign()->post_status, array( 'pending', 'draft' ) ) ) {
+				return $this->get_fields_filtered_by_callback( $fields, array( $this, 'is_update_only_field' ) );
+			}
+
+			return $fields;
+		}
+
+		/**
+		 * Returns all fields as a merged array.
+		 *
+		 * @param  string $page The page we're on currently.
+		 * @return array[]
+		 * @since  1.0.0
+		 */
+		public function get_merged_fields( $page = '' ) {
+			$parent_fields = empty( $page ) ? $this->get_fields() : $this->get_page_fields( $page );
+
+			$fields = [];
+
+			foreach ( $parent_fields as $key => $section ) {
+
+				if ( isset( $section['fields'] ) ) {
+					$fields = array_merge( $fields, $section['fields'] );
+				} else {
+					$fields[ $key ] = $section;
+				}
+			}
+
+			return $fields;
+		}
+
+		/**
+		 * Organize fields by data type, also filtering out unused parameters (we just need the key and the type).
+		 *
+		 * @since  1.0.0
+		 *
+		 * @param  string $key   The key of the field.
+		 * @param  array  $field The field settings.
+		 * @param  array  $ret   Default return value.
+		 * @return array[]
+		 */
+		public function sort_field_by_data_type( $key, $field, $ret ) {
+			/* Filter out paragraphs and fields without a type. */
+			if ( ! isset( $field['type'] ) || 'paragraph' == $field['type'] ) {
+				return $ret;
+			}
+
+			/* Get the data type. Default to meta if no type is set. */
+			$data_type = isset( $field['data_type'] ) ? $field['data_type'] : 'meta';
+
+			$ret[ $data_type ][ $key ] = $field['type'];
+
+			return $ret;
+		}
+
+		/**
+		 * Verify that the current user can create or edit this campaign.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return boolean This will return true if the user can edit the campaign, or if this is a new campaign.
+		 */
+		public function current_user_can_edit_campaign() {
+			$campaign = $this->get_campaign();
+
+			if ( ! $campaign ) {
+				return true;
+			}
+
+			return $this->get_campaign()->post_author == get_current_user_id();
+		}
+
+		/**
+		 * Save campaign after form submission.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return void
+		 */
+		public static function save_campaign() {
+			$processor = new Charitable_Ambassadors_Campaign_Form_Processor( new self() );
+
+			/**
+			 * Redirect the user after they completed submitting or saving their campaign.
+			 */
+			if ( $processor->is_processed( 'campaign_details' ) ) {
+				wp_safe_redirect( charitable_ambassadors_get_submission_redirect_url( $processor ) );
+				exit();
+			}
+		}
+
+		/**
+		 * Returns the submission of the context.
+		 *
+		 * @since  1.1.0
+		 *
+		 * @return string
+		 */
+		public function get_submission_context() {
+			if ( ! isset( $this->processor ) ) {
+				return false;
+			}
+
+			return $this->processor->get_context();
+		}
+
+		/**
+		 * Set a field's initial value.
+		 *
+		 * @since  2.0.0
+		 *
+		 * @param  array  $field Field definition.
+		 * @param  string $key   The key of the field.
+		 * @return array
+		 */
+		protected function set_field_value( $field, $key ) {
+			$default = array_key_exists( 'default', $field ) ? $field['default'] : '';
+
+			switch ( $field['data_type'] ) {
+				case 'user':
+					$field['value'] = $this->get_user_value( $key, $default );
+					break;
+
+				default:
+					$field['value'] = $this->get_campaign_value( $key, $default );
+			}
+
+			return $field;
+		}
+
+		/**
+		 * Get a specific form fields setting.
+		 *
+		 * @since  2.0.0
+		 *
+		 * @param  string $setting The setting to get.
+		 * @return mixed
+		 */
+		protected function get_form_fields_setting( $setting ) {
+			if ( ! isset( $this->form_fields_settings ) ) {
+				$this->form_fields_settings = charitable_get_option(
+					'campaign_form_fields',
+					[
+						'end_date'            => 'end-date',
+						'category'            => 'multi-checkbox',
+						'tag'                 => 'multi-checkbox',
+						'donation_options'    => 'enabled',
+						'recurring_donations' => 'disabled',
+					]
+				);
+			}
+
+			if ( ! array_key_exists( $setting, $this->form_fields_settings ) ) {
+				return '';
+			}
+
+			return $this->form_fields_settings[ $setting ];
+		}
+
+		/**
+		 * Returns the campaign length field.
+		 *
+		 * @since  1.1.17
+		 *
+		 * @return array
+		 */
+		protected function setup_campaign_length_field() {
+			$campaign_min = charitable_get_option( 'campaign_length_min' );
+			$campaign_max = charitable_get_option( 'campaign_length_max' );
+
+			if ( empty( $campaign_max ) ) {
+				$campaign_length_placeholder = '&#8734;';
+				$length_required             = false;
+			} else {
+				if ( 0 == $campaign_min ) {
+					$campaign_min = 1;
+				}
+
+				/**
+				 * Filter the default campaign length.
+				 *
+				 * @since 1.0.0
+				 *
+				 * @param int $campaign_min            The least number of days that a campaign can be.
+				 * @param int $campaign_max            The most number of days that a campaign can be.
+				 * @param int $campaign_min_unfiltered The least number of days that a campaign can be.
+				 */
+				$campaign_length_placeholder = apply_filters( 'charitable_default_campaign_length', $campaign_min, $campaign_max, $campaign_min );
+				$length_required             = true;
+			}
+
+			$field = [
+				'label'       => __( 'Length in Days', 'charitable-ambassadors' ),
+				'type'        => 'number',
+				'priority'    => 8,
+				'required'    => $length_required,
+				'placeholder' => $campaign_length_placeholder,
+				'min'         => $campaign_min,
+				'value'       => $this->get_campaign_value( 'length' ),
+				'data_type'   => 'meta',
+				'editable'    => false,
+			];
+
+			if ( ! empty( $campaign_max ) ) {
+				$field['max'] = $campaign_max;
+			}
+
+			return $field;
+		}
+
+		/**
+		 * Set up the campaign end date field.
+		 *
+		 * @since  2.0.0
+		 *
+		 * @param  array $field The default field setup.
+		 * @return array|false
+		 */
+		protected function sanitize_end_date_field( $field ) {
+			if ( 'end-date' != $this->get_form_fields_setting( 'end_date' ) ) {
+				return false;
+			}
+
+			$campaign_min = charitable_get_option( 'campaign_length_min' );
+			$campaign_max = charitable_get_option( 'campaign_length_max' );
+
+			if ( empty( $campaign_max ) ) {
+				$field['placeholder'] = '&#8734;';
+			} else {
+				$field['max_date'] = '+' . $campaign_max;
+
+				if ( 0 == $campaign_min ) {
+					$campaign_min = 1;
+				}
+			}
+
+			$field['min_date'] = '+' . $campaign_min;
+
+			return $field;
+		}
+
+		/**
+		 * Sanitize the categories field.
+		 *
+		 * @since  2.0.0
+		 *
+		 * @param  array $field The categories field.
+		 * @return array|false
+		 */
+		protected function sanitize_categories_field( $field ) {
+			$setting = $this->get_form_fields_setting( 'category' );
+
+			if ( 'disabled' == $setting ) {
+				return false;
+			}
+
+			if ( empty( $field['options'] ) ) {
+				$field['options'] = get_terms(
+					'campaign_category',
+					[
+						'hide_empty' => false,
+						'fields'     => 'id=>name',
+					]
+				);
+
+				if ( empty( $field['options'] ) ) {
+					return false;
+				}
+			}
+
+			if ( 'select' == $setting ) {
+				$field['type'] = 'select';
+			}
+
+			return $field;
+		}
+
+		/**
+		 * Sanitize the tags field.
+		 *
+		 * @since  2.0.0
+		 *
+		 * @param  array $field The tags field.
+		 * @return array|false
+		 */
+		protected function sanitize_tags_field( $field ) {
+			$setting = $this->get_form_fields_setting( 'tag' );
+
+			if ( 'disabled' == $setting ) {
+				return false;
+			}
+
+			$field['options'] = get_terms(
+				'campaign_tag',
+				[
+					'hide_empty' => false,
+					'fields'     => 'id=>name',
+				]
+			);
+
+			if ( empty( $field['options'] ) ) {
+				return false;
+			}
+
+			if ( 'select' == $setting ) {
+				$field['type'] = 'select';
+			}
+
+			return $field;
+		}
+
+		/**
+		 * Sanitize the suggested donations field.
+		 *
+		 * @since  2.0.0
+		 *
+		 * @param  array $field The default field parameters.
+		 * @return array|false
+		 */
+		public function sanitize_suggested_donations_field( $field ) {
+			if ( 'disabled' == $this->get_form_fields_setting( 'donation_options' ) ) {
+				return false;
+			}
+
+			return $field;
+		}
+
+		/**
+		 * Filter out fields by callback.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @param  array[] $fields
+		 * @param  callback $callback
+		 * @return array[]
+		 */
+		protected function get_fields_filtered_by_callback( $fields, $callback ) {
+			foreach ( $fields as $section_key => $section ) {
+
+				if ( ! isset( $section['fields'] ) ) {
+					continue;
+				}
+
+				foreach ( $section['fields'] as $field_key => $field ) {
+					if ( call_user_func( $callback, $field ) ) {
+						unset( $fields[ $section_key ]['fields'][ $field_key ] );
+					}
+				}
+			}
+
+			return $fields;
+		}
+
+		/**
+		 * Returns true if the given field is a non-editable field.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return boolean
+		 */
+		protected function is_non_editable_field( $field ) {
+			return isset( $field['editable'] ) && false === $field['editable'];
+		}
+
+		/**
+		 * Returns true if the given field is an update only field.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return boolean
+		 */
+		protected function is_update_only_field( $field ) {
+			return isset( $field['update_only'] ) && $field['update_only'];
+		}
+
+		/**
+		 * Return the fields for the current page.
+		 *
+		 * @since  1.0.0
+		 *
+		 * @return array
+		 */
+		protected function get_page_fields( $page ) {
+			$fields = [];
+
+			foreach ( $this->get_fields() as $key => $field ) {
+				if ( isset( $field['page'] ) && $page == $field['page'] ) {
+					$fields[ $key ] = $field;
+				}
+			}
+
+			return $fields;
+		}
+
+		/**
+		 * Adds hidden fields to the start of the donation form.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated.
+		 *
+		 * @param  Charitable_Form $form The form object.
+		 * @return boolean
+		 */
+		public function add_hidden_fields( $form ) {
+			$hidden_fields = apply_filters(
+				'charitable_ambassadors_campaign_form_hidden_fields',
+				array(
+					'charitable_action' => $this->form_action,
+					'page'              => $this->get_current_page(),
+					'ID'                => $this->get_campaign_value( 'ID' ),
+				),
+				$this
+			);
+
+			foreach ( $hidden_fields as $name => $value ) {
+				printf( '<input type="hidden" name="%s" value="%s" />', $name, $value );
+			}
+
+			return true;
+		}
+
+
+		/**
+		 * Save the campaign details.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public static function save_campaign_details() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Save the user data for this form.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public function save_user_data() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Create the campaign as a new object in the wp_posts table.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public function save_core_campaign_data() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Save the campaign taxonomy data.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public function save_campaign_taxonomies() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Save the meta fields for the newly created campaign.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public function save_campaign_meta( $fields, $submitted, $campaign_id ) {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Upload campaign thumbnail and add file field to the submitted fields.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public function save_picture() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Save campaign end date based on length.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public function get_end_date() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Add end_date to the campaign meta fields to be saved.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public function save_end_date() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Make sure the campaign length is a valid value.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public function sanitize_campaign_length() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Set meta key for thumbnail ID.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public function set_thumbnail_id_meta_key() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Sanitize the recurring donations meta.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.1.14
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return string
+		 */
+		public function sanitize_recurring_donations() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Redirect to the campaign if it's published or we're previewing.
+		 *
+		 * Otherwise, redirect to the campaign submission success page set in the admin settings.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.1.14
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return string
+		 */
+		public function get_redirect_url() {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+
+			return charitable_ambassadors_get_submission_redirect_url( $this->processor() );
+		}
+
+		/**
+		 * Set the context of the submission.
+		 *
+		 * This will either be preview, submission, update or preview-update.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.1.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @return void
+		 */
+		public function set_submission_context( $submitted ) {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+
+		/**
+		 * Save the raw submitted data as a JSON encoded array.
+		 *
+		 * @deprecated 2.2.0
+		 *
+		 * @since  1.0.0
+		 * @since  2.0.0 Deprecated. Form processing is handled by `Charitable_Ambassadors_Campaign_Form_Processor`,
+		 *               `Charitable_Ambassadors_Campaign_Form_Data_Processor` and `Charitable_Campaign_Processor`.
+		 *
+		 * @param  array $submitted   The values submitted by the user.
+		 * @param  int   $campaign_id The campaign ID.
+		 * @return void
+		 */
+		public function save_submission_data( $submitted, $campaign_id ) {
+			charitable_ambassadors_deprecated()->deprecated_function(
+				__METHOD__,
+				'2.0.0'
+			);
+		}
+	}
+add_action(
+	'init',
+	function() {
+		$fields = charitable()->campaign_fields();
+
+		/**
+		 * You can adapt this to change any field in the Campaign Details section
+		 * by swapping the key. The following keys are available:
+		 *
+		 * - post_title
+		 * - description
+		 * - goal
+		 * - end_date
+		 * - categories
+		 * - tags
+		 * - post_content
+		 * - image
+		 * - suggested_donations
+		 * - allow_custom_donations
+		 *
+		 * In the example below, we change the 'description' and 'post_content' fields
+		 * to not be required, and we change the 'goal' field to be required.
+		 */
+
+		/* Change both the Short Description & Full Description fields to not be required. */
+		$fields->get_field( 'description' )->set( 'campaign_form', 'required', false );
+		$fields->get_field( 'post_content' )->set( 'campaign_form', 'required', false );
+		$fields->get_field( 'goal' )->set( 'campaign_form', 'required', false );
+	}
+);
+endif; // End class_exists check
